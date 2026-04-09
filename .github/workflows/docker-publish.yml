@@ -36,7 +36,7 @@ jobs:
       - uses: docker/metadata-action@v5
         id: meta
         with:
-          images: ghcr.io/icebear0828/codex-proxy
+          images: ghcr.io/enderzcx/codex-proxy-master
           tags: |
             type=raw,value=latest
             type=raw,value=v${{ steps.version.outputs.version }}
