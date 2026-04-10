@@ -33,6 +33,7 @@ import type { RequestHistoryStore } from "../auth/request-history.js";
 import {
   createRequestHistoryContext,
   finalizeRequestHistory,
+  recordRawBody,
   recordRequestHistoryFailure,
 } from "./shared/request-history.js";
 
@@ -324,6 +325,7 @@ async function handleCompact(
   proxyPool: ProxyPool | undefined,
   body: Record<string, unknown>,
   requestHistoryStore?: RequestHistoryStore,
+  rawBodyText?: string,
 ): Promise<Response> {
   const rawModel = typeof body.model === "string" ? body.model : "codex";
   const parsed = parseModelName(rawModel);
@@ -335,6 +337,7 @@ async function handleCompact(
     false,
     "responses",
   );
+  if (rawBodyText) recordRawBody(historyCtx, rawBodyText);
 
   // Build CodexCompactRequest — matches codex-rs CompactionInput
   const compactRequest: CodexCompactRequest = {
@@ -509,14 +512,18 @@ export function createResponsesRoutes(
       return authErr;
     }
 
+    let rawBodyText: string = "";
     let rawBody: unknown;
     try {
-      rawBody = await c.req.json();
+      rawBodyText = await c.req.text();
+      rawBody = JSON.parse(rawBodyText);
     } catch {
       c.status(400);
+      const ctx = createRequestHistoryContext(c, "/v1/responses", "unknown", true, "responses");
+      if (rawBodyText) recordRawBody(ctx, rawBodyText);
       recordRequestHistoryFailure(
         requestHistoryStore,
-        createRequestHistoryContext(c, "/v1/responses", "unknown", true, "responses"),
+        ctx,
         400,
         "invalid_json",
         "Malformed JSON request body",
@@ -533,9 +540,11 @@ export function createResponsesRoutes(
 
     const body = parseBody(c, rawBody);
     if (body instanceof Response) {
+      const ctx = createRequestHistoryContext(c, "/v1/responses", "unknown", true, "responses");
+      recordRawBody(ctx, rawBodyText);
       recordRequestHistoryFailure(
         requestHistoryStore,
-        createRequestHistoryContext(c, "/v1/responses", "unknown", true, "responses"),
+        ctx,
         400,
         "invalid_request",
         "Request body must be a JSON object",
@@ -622,17 +631,19 @@ export function createResponsesRoutes(
     }
 
     const clientWantsStream = body.stream !== false;
+    const successCtx = createRequestHistoryContext(
+      c,
+      "/v1/responses",
+      displayModel,
+      clientWantsStream,
+      "responses",
+    );
+    recordRawBody(successCtx, rawBodyText);
     const proxyReq = {
       codexRequest,
       model: displayModel,
       isStreaming: clientWantsStream,
-      requestHistory: createRequestHistoryContext(
-        c,
-        "/v1/responses",
-        displayModel,
-        clientWantsStream,
-        "responses",
-      ),
+      requestHistory: successCtx,
       tupleSchema,
     };
 
@@ -660,14 +671,18 @@ export function createResponsesRoutes(
       return authErr;
     }
 
+    let rawBodyText: string = "";
     let rawBody: unknown;
     try {
-      rawBody = await c.req.json();
+      rawBodyText = await c.req.text();
+      rawBody = JSON.parse(rawBodyText);
     } catch {
       c.status(400);
+      const ctx = createRequestHistoryContext(c, "/v1/responses/compact", "unknown", false, "responses");
+      if (rawBodyText) recordRawBody(ctx, rawBodyText);
       recordRequestHistoryFailure(
         requestHistoryStore,
-        createRequestHistoryContext(c, "/v1/responses/compact", "unknown", false, "responses"),
+        ctx,
         400,
         "invalid_json",
         "Malformed JSON request body",
@@ -684,9 +699,11 @@ export function createResponsesRoutes(
 
     const body = parseBody(c, rawBody);
     if (body instanceof Response) {
+      const ctx = createRequestHistoryContext(c, "/v1/responses/compact", "unknown", false, "responses");
+      recordRawBody(ctx, rawBodyText);
       recordRequestHistoryFailure(
         requestHistoryStore,
-        createRequestHistoryContext(c, "/v1/responses/compact", "unknown", false, "responses"),
+        ctx,
         400,
         "invalid_request",
         "Request body must be a JSON object",
@@ -694,7 +711,7 @@ export function createResponsesRoutes(
       return body;
     }
 
-    return handleCompact(c, accountPool, cookieJar, proxyPool, body, requestHistoryStore);
+    return handleCompact(c, accountPool, cookieJar, proxyPool, body, requestHistoryStore, rawBodyText);
   };
 
   app.post("/v1/responses", responsesHandler);

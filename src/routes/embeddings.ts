@@ -11,6 +11,7 @@ import type { UsageInfo } from "../translation/codex-event-extractor.js";
 import {
   createRequestHistoryContext,
   finalizeRequestHistory,
+  recordRawBody,
   recordRequestHistoryFailure,
 } from "./shared/request-history.js";
 
@@ -59,14 +60,18 @@ export function createEmbeddingsRoutes(
     }
 
     // Parse body
+    let rawBodyText: string = "";
     let body: Record<string, unknown>;
     try {
-      body = await c.req.json() as Record<string, unknown>;
+      rawBodyText = await c.req.text();
+      body = JSON.parse(rawBodyText) as Record<string, unknown>;
       if (typeof body.model === "string") {
         historyCtx.model = body.model;
       }
+      recordRawBody(historyCtx, rawBodyText);
     } catch {
       c.status(400);
+      if (rawBodyText) recordRawBody(historyCtx, rawBodyText);
       recordRequestHistoryFailure(
         requestHistoryStore,
         historyCtx,

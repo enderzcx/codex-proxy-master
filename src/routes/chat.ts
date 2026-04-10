@@ -19,6 +19,7 @@ import type { UpstreamRouter } from "../proxy/upstream-router.js";
 import type { RequestHistoryStore } from "../auth/request-history.js";
 import {
   createRequestHistoryContext,
+  recordRawBody,
   recordRequestHistoryFailure,
 } from "./shared/request-history.js";
 
@@ -117,14 +118,18 @@ export function createChatRoutes(
     }
 
     // Parse request
+    let rawBody: string = "";
     let body: unknown;
     try {
-      body = await c.req.json();
+      rawBody = await c.req.text();
+      body = JSON.parse(rawBody);
     } catch {
       c.status(400);
+      const ctx = createRequestHistoryContext(c, "/v1/chat/completions", "unknown", false, "chat");
+      if (rawBody) recordRawBody(ctx, rawBody);
       recordRequestHistoryFailure(
         requestHistoryStore,
-        createRequestHistoryContext(c, "/v1/chat/completions", "unknown", false, "chat"),
+        ctx,
         400,
         "invalid_json",
         "Malformed JSON request body",
@@ -144,9 +149,11 @@ export function createChatRoutes(
       const rawModel = typeof (body as Record<string, unknown>)?.model === "string"
         ? String((body as Record<string, unknown>).model)
         : "unknown";
+      const ctx = createRequestHistoryContext(c, "/v1/chat/completions", rawModel, false, "chat");
+      recordRawBody(ctx, rawBody);
       recordRequestHistoryFailure(
         requestHistoryStore,
-        createRequestHistoryContext(c, "/v1/chat/completions", rawModel, false, "chat"),
+        ctx,
         400,
         "invalid_request",
         `Invalid request: ${parsed.error.message}`,
@@ -165,17 +172,19 @@ export function createChatRoutes(
     const { codexRequest, tupleSchema } = translateToCodexRequest(req);
     const displayModel = buildDisplayModelName(parseModelName(req.model));
     const wantReasoning = !!req.reasoning_effort;
+    const successCtx = createRequestHistoryContext(
+      c,
+      "/v1/chat/completions",
+      displayModel,
+      !!req.stream,
+      "chat",
+    );
+    recordRawBody(successCtx, rawBody);
     const proxyReq = {
       codexRequest,
       model: displayModel,
       isStreaming: req.stream,
-      requestHistory: createRequestHistoryContext(
-        c,
-        "/v1/chat/completions",
-        displayModel,
-        req.stream,
-        "chat",
-      ),
+      requestHistory: successCtx,
       tupleSchema,
     };
     const fmt = makeOpenAIFormat(wantReasoning);

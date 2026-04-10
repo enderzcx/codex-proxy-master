@@ -203,7 +203,7 @@ export async function handleProxyRequest(
 
         return stream(c, async (s) => {
           s.onAbort(() => abortController.abort());
-          let streamResult = { aborted: false, errorMessage: null as string | null };
+          let streamResult = { aborted: false, errorMessage: null as string | null, responseBytes: 0 };
           try {
             streamResult = await streamResponse(
               s, capturedApi, rawResponse, req.model, fmt,
@@ -222,6 +222,9 @@ export async function handleProxyRequest(
                 (usageInfo.cached_tokens ? ` cached=${usageInfo.cached_tokens}` : "") +
                 (usageInfo.reasoning_tokens ? ` reasoning=${usageInfo.reasoning_tokens}` : ""),
               );
+            }
+            if (req.requestHistory) {
+              req.requestHistory.response_size_bytes = streamResult.responseBytes;
             }
             finalizeRequestHistory(requestHistoryStore, accountPool, req.requestHistory, {
               responseId: capturedResponseId,
@@ -334,6 +337,19 @@ async function handleNonStreaming(
       );
       if (result.responseId && affinityMap && conversationId) {
         affinityMap.record(result.responseId, currentEntryId, conversationId, turnState);
+      }
+      // v2: measure response body size by serializing. Small cost (JSON
+      // stringify happens on c.json() anyway); this captures the client-visible
+      // payload size.
+      if (req.requestHistory) {
+        try {
+          req.requestHistory.response_size_bytes = Buffer.byteLength(
+            JSON.stringify(result.response ?? null),
+            "utf-8",
+          );
+        } catch {
+          req.requestHistory.response_size_bytes = null;
+        }
       }
       finalizeRequestHistory(requestHistoryStore, accountPool, req.requestHistory, {
         responseId: result.responseId,

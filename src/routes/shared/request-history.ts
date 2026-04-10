@@ -1,6 +1,8 @@
+import { createHash } from "crypto";
 import type { Context } from "hono";
 import type { AccountPool } from "../../auth/account-pool.js";
 import type { RequestHistoryRecord, RequestOutcome, RequestHistoryStore } from "../../auth/request-history.js";
+import { USER_AGENT_MAX } from "../../auth/request-history.js";
 import type { UsageInfo } from "../../translation/codex-event-extractor.js";
 
 export interface RequestHistoryContext {
@@ -11,6 +13,65 @@ export interface RequestHistoryContext {
   streaming: boolean;
   route_family: string;
   started_at_ms: number;
+  /** v2: extracted at ctor time; immutable afterwards. */
+  client_ip: string | null;
+  /** v2: truncated User-Agent. */
+  user_agent: string | null;
+  /** v2: initially from Content-Length header; overwritten by measured byte length if raw body is buffered. */
+  request_size_bytes: number | null;
+  /** v2: accumulated by stream forwarders or set from non-streaming response text. null if not captured. */
+  response_size_bytes: number | null;
+  /** v2: populated by recordFingerprint() after raw body is available. null if body parse failed. */
+  request_fingerprint: string | null;
+}
+
+/** Body prefix length that feeds sha256 for fingerprint. Keep fingerprint deterministic across callers. */
+export const FINGERPRINT_BODY_CAP = 2048;
+
+export function extractClientIp(c: Context): string | null {
+  const realIp = c.req.header("x-real-ip");
+  if (realIp && realIp.trim()) return realIp.trim();
+  const xff = c.req.header("x-forwarded-for");
+  if (xff) {
+    const first = xff.split(",")[0]?.trim();
+    if (first) return first;
+  }
+  return null;
+}
+
+export function extractUserAgent(c: Context): string | null {
+  const ua = c.req.header("user-agent");
+  if (!ua) return null;
+  return ua.length > USER_AGENT_MAX ? ua.slice(0, USER_AGENT_MAX) : ua;
+}
+
+export function extractRequestSize(c: Context): number | null {
+  // Content-Length is what the client claims; may be absent for chunked TE.
+  // We treat this as a best-effort initial value and overwrite with the real
+  // measured byte count after the body is buffered in the route handler.
+  const cl = c.req.header("content-length");
+  if (!cl) return null;
+  const n = parseInt(cl, 10);
+  return Number.isFinite(n) && n >= 0 ? n : null;
+}
+
+export function computeRequestFingerprint(method: string, path: string, body: string): string {
+  const capped = body.length > FINGERPRINT_BODY_CAP ? body.slice(0, FINGERPRINT_BODY_CAP) : body;
+  const hash = createHash("sha256");
+  hash.update(method);
+  hash.update("\n");
+  hash.update(path);
+  hash.update("\n");
+  hash.update(capped);
+  return hash.digest("hex").slice(0, 16);
+}
+
+/** Apply raw-body-derived fields (size + fingerprint) to an existing context. */
+export function recordRawBody(ctx: RequestHistoryContext, rawBody: string): void {
+  ctx.request_fingerprint = computeRequestFingerprint(ctx.method, ctx.path, rawBody);
+  if (rawBody !== undefined) {
+    ctx.request_size_bytes = Buffer.byteLength(rawBody, "utf-8");
+  }
 }
 
 export interface FinalizeRequestHistoryOptions {
@@ -40,6 +101,11 @@ export function createRequestHistoryContext(
     streaming,
     route_family: routeFamily,
     started_at_ms: Date.now(),
+    client_ip: extractClientIp(c),
+    user_agent: extractUserAgent(c),
+    request_size_bytes: extractRequestSize(c),
+    response_size_bytes: null,
+    request_fingerprint: null,
   };
 }
 
@@ -73,6 +139,11 @@ export function finalizeRequestHistory(
     cached_tokens: options.usage?.cached_tokens ?? null,
     reasoning_tokens: options.usage?.reasoning_tokens ?? null,
     attempt_count: options.attemptCount,
+    client_ip: ctx.client_ip,
+    user_agent: ctx.user_agent,
+    request_size_bytes: ctx.request_size_bytes,
+    response_size_bytes: ctx.response_size_bytes,
+    request_fingerprint: ctx.request_fingerprint,
   };
   store.record(record);
 }

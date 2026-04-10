@@ -30,6 +30,7 @@ import type { UpstreamRouter } from "../proxy/upstream-router.js";
 import type { RequestHistoryStore } from "../auth/request-history.js";
 import {
   createRequestHistoryContext,
+  recordRawBody,
   recordRequestHistoryFailure,
 } from "./shared/request-history.js";
 
@@ -158,14 +159,18 @@ export function createGeminiRoutes(
     }
 
     // Parse request
+    let rawBody: string = "";
     let body: unknown;
     try {
-      body = await c.req.json();
+      rawBody = await c.req.text();
+      body = JSON.parse(rawBody);
     } catch {
       c.status(400);
+      const ctx = createRequestHistoryContext(c, "/v1beta/models/:modelAction", geminiModel, isStreaming, "gemini");
+      if (rawBody) recordRawBody(ctx, rawBody);
       recordRequestHistoryFailure(
         requestHistoryStore,
-        createRequestHistoryContext(c, "/v1beta/models/:modelAction", geminiModel, isStreaming, "gemini"),
+        ctx,
         400,
         "invalid_json",
         "Invalid JSON in request body",
@@ -175,9 +180,11 @@ export function createGeminiRoutes(
     const validationResult = GeminiGenerateContentRequestSchema.safeParse(body);
     if (!validationResult.success) {
       c.status(400);
+      const ctx = createRequestHistoryContext(c, "/v1beta/models/:modelAction", geminiModel, isStreaming, "gemini");
+      recordRawBody(ctx, rawBody);
       recordRequestHistoryFailure(
         requestHistoryStore,
-        createRequestHistoryContext(c, "/v1beta/models/:modelAction", geminiModel, isStreaming, "gemini"),
+        ctx,
         400,
         "invalid_request",
         `Invalid request: ${validationResult.error.message}`,
@@ -197,17 +204,19 @@ export function createGeminiRoutes(
       `[Gemini] Model: ${geminiModel} → ${codexRequest.model}`,
     );
 
+    const successCtx = createRequestHistoryContext(
+      c,
+      "/v1beta/models/:modelAction",
+      geminiModel,
+      isStreaming,
+      "gemini",
+    );
+    recordRawBody(successCtx, rawBody);
     const proxyReq = {
       codexRequest,
       model: geminiModel,
       isStreaming,
-      requestHistory: createRequestHistoryContext(
-        c,
-        "/v1beta/models/:modelAction",
-        geminiModel,
-        isStreaming,
-        "gemini",
-      ),
+      requestHistory: successCtx,
       tupleSchema,
     };
 

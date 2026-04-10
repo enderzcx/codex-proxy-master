@@ -28,6 +28,12 @@ function createRecord(overrides?: Partial<RequestHistoryRecord>): RequestHistory
     cached_tokens: 0,
     reasoning_tokens: 0,
     attempt_count: 1,
+    // v2 fields
+    client_ip: null,
+    user_agent: null,
+    request_size_bytes: null,
+    response_size_bytes: null,
+    request_fingerprint: null,
     ...overrides,
   };
 }

@@ -41,6 +41,48 @@ export interface RequestHistoryRecord {
   cached_tokens: number | null;
   reasoning_tokens: number | null;
   attempt_count: number;
+  /** v2: client source IP from X-Real-IP / X-Forwarded-For. null when absent. */
+  client_ip: string | null;
+  /** v2: User-Agent header, truncated to USER_AGENT_MAX chars. */
+  user_agent: string | null;
+  /** v2: request body size in bytes (header Content-Length preferred, measured fallback). */
+  request_size_bytes: number | null;
+  /** v2: accumulated upstream response body byte count. null if not captured. */
+  response_size_bytes: number | null;
+  /** v2: first 16 hex chars of sha256(method + "\n" + path + "\n" + body[0:2048]). */
+  request_fingerprint: string | null;
+}
+
+/** v2: normalize a possibly-legacy record so callers can rely on all fields being present. */
+export function normalizeLegacyRecord(raw: Partial<RequestHistoryRecord>): RequestHistoryRecord {
+  return {
+    timestamp: raw.timestamp ?? "",
+    request_id: raw.request_id ?? "",
+    response_id: raw.response_id ?? null,
+    path: raw.path ?? "",
+    method: raw.method ?? "",
+    model: raw.model ?? "",
+    streaming: raw.streaming ?? false,
+    route_family: raw.route_family ?? "",
+    account_entry_id: raw.account_entry_id ?? null,
+    account_email: raw.account_email ?? null,
+    account_label: raw.account_label ?? null,
+    status_code: raw.status_code ?? 0,
+    outcome: raw.outcome ?? "error",
+    error_code: raw.error_code ?? null,
+    error_message: raw.error_message ?? null,
+    duration_ms: raw.duration_ms ?? 0,
+    input_tokens: raw.input_tokens ?? null,
+    output_tokens: raw.output_tokens ?? null,
+    cached_tokens: raw.cached_tokens ?? null,
+    reasoning_tokens: raw.reasoning_tokens ?? null,
+    attempt_count: raw.attempt_count ?? 0,
+    client_ip: raw.client_ip ?? null,
+    user_agent: raw.user_agent ?? null,
+    request_size_bytes: raw.request_size_bytes ?? null,
+    response_size_bytes: raw.response_size_bytes ?? null,
+    request_fingerprint: raw.request_fingerprint ?? null,
+  };
 }
 
 export interface RequestHistoryQuery {
@@ -57,6 +99,35 @@ export interface RequestHistoryQueryResult {
   total: number;
   page: number;
   page_size: number;
+}
+
+/** v2: aggregation grouping dimension. */
+export type RequestHistoryAggregateBy = "client_ip" | "request_fingerprint" | "user_agent";
+
+export interface RequestHistoryAggregateQuery {
+  by: RequestHistoryAggregateBy;
+  hours: number;
+  limit: number;
+}
+
+export interface RequestHistoryAggregateGroup {
+  key: string;
+  request_count: number;
+  success_count: number;
+  error_count: number;
+  aborted_count: number;
+  total_input_tokens: number;
+  total_output_tokens: number;
+  first_seen: string;
+  last_seen: string;
+  distinct_fingerprints: number;
+  distinct_models: string[];
+}
+
+export interface RequestHistoryAggregateResult {
+  by: RequestHistoryAggregateBy;
+  hours: number;
+  groups: RequestHistoryAggregateGroup[];
 }
 
 interface RequestHistoryPersistence {
@@ -77,7 +148,13 @@ const CSV_HEADERS = [
   "duration_ms",
   "outcome",
   "request_id",
+  "client_ip",
+  "user_agent",
+  "request_size_bytes",
+  "response_size_bytes",
+  "request_fingerprint",
 ] as const;
+export const USER_AGENT_MAX = 200;
 const TMP_SUFFIX = ".tmp";
 
 function getFilePath(): string {
@@ -120,8 +197,11 @@ function readJsonlFile(filePath: string): RequestHistoryRecord[] {
     .split("\n")
     .map((line) => line.trim())
     .filter(Boolean)
-    .map((line) => JSON.parse(line) as RequestHistoryRecord)
-    .filter((record) => typeof record.request_id === "string");
+    .map((line) => JSON.parse(line) as Partial<RequestHistoryRecord>)
+    .filter((record): record is Partial<RequestHistoryRecord> & { request_id: string } =>
+      typeof record.request_id === "string",
+    )
+    .map(normalizeLegacyRecord);
 }
 
 export function createFsRequestHistoryPersistence(): RequestHistoryPersistence {
@@ -240,9 +320,98 @@ export class RequestHistoryStore {
         record.duration_ms,
         record.outcome,
         record.request_id,
+        record.client_ip,
+        record.user_agent,
+        record.request_size_bytes,
+        record.response_size_bytes,
+        record.request_fingerprint,
       ].map(toCsvCell).join(",");
     });
     return [CSV_HEADERS.join(","), ...rows].join("\n");
+  }
+
+  /**
+   * v2: group request records by a categorical dimension within a time window.
+   *
+   * Used by the admin aggregation endpoint to spot abuse patterns (e.g. same
+   * client_ip replaying the same fingerprint many times = agent loop).
+   *
+   * Complexity: O(n) over records in the window. At realistic volumes
+   * (< 1M records for 30 days) this is a few hundred ms in the worst case,
+   * which is acceptable for admin-only endpoints.
+   */
+  aggregate(params: RequestHistoryAggregateQuery): RequestHistoryAggregateResult {
+    const cutoff = Date.now() - params.hours * 60 * 60 * 1000;
+    const buckets = new Map<string, {
+      key: string;
+      request_count: number;
+      success_count: number;
+      error_count: number;
+      aborted_count: number;
+      total_input_tokens: number;
+      total_output_tokens: number;
+      first_seen_ms: number;
+      last_seen_ms: number;
+      fingerprints: Set<string>;
+      models: Set<string>;
+    }>();
+
+    for (const r of this.records) {
+      const ts = new Date(r.timestamp).getTime();
+      if (ts < cutoff) continue;
+      let key: string | null = null;
+      if (params.by === "client_ip") key = r.client_ip ?? "(unknown)";
+      else if (params.by === "request_fingerprint") key = r.request_fingerprint ?? "(unknown)";
+      else if (params.by === "user_agent") key = r.user_agent ?? "(unknown)";
+      if (key == null) continue;
+
+      let b = buckets.get(key);
+      if (!b) {
+        b = {
+          key,
+          request_count: 0,
+          success_count: 0,
+          error_count: 0,
+          aborted_count: 0,
+          total_input_tokens: 0,
+          total_output_tokens: 0,
+          first_seen_ms: ts,
+          last_seen_ms: ts,
+          fingerprints: new Set<string>(),
+          models: new Set<string>(),
+        };
+        buckets.set(key, b);
+      }
+      b.request_count++;
+      if (r.outcome === "success") b.success_count++;
+      else if (r.outcome === "error") b.error_count++;
+      else if (r.outcome === "aborted") b.aborted_count++;
+      b.total_input_tokens += r.input_tokens ?? 0;
+      b.total_output_tokens += r.output_tokens ?? 0;
+      if (ts < b.first_seen_ms) b.first_seen_ms = ts;
+      if (ts > b.last_seen_ms) b.last_seen_ms = ts;
+      if (r.request_fingerprint) b.fingerprints.add(r.request_fingerprint);
+      if (r.model) b.models.add(r.model);
+    }
+
+    const groups: RequestHistoryAggregateGroup[] = Array.from(buckets.values())
+      .map((b) => ({
+        key: b.key,
+        request_count: b.request_count,
+        success_count: b.success_count,
+        error_count: b.error_count,
+        aborted_count: b.aborted_count,
+        total_input_tokens: b.total_input_tokens,
+        total_output_tokens: b.total_output_tokens,
+        first_seen: new Date(b.first_seen_ms).toISOString(),
+        last_seen: new Date(b.last_seen_ms).toISOString(),
+        distinct_fingerprints: b.fingerprints.size,
+        distinct_models: Array.from(b.models).sort(),
+      }))
+      .sort((a, b) => b.request_count - a.request_count)
+      .slice(0, params.limit);
+
+    return { by: params.by, hours: params.hours, groups };
   }
 
   get size(): number {

@@ -1,7 +1,8 @@
 import { Hono } from "hono";
-import type { RequestHistoryStore, RequestOutcome } from "../../auth/request-history.js";
+import type { RequestHistoryStore, RequestOutcome, RequestHistoryAggregateBy } from "../../auth/request-history.js";
 
 const ALLOWED_STATUSES = new Set<RequestOutcome | "all">(["all", "success", "error", "aborted"]);
+const ALLOWED_AGGREGATE_BY = new Set<RequestHistoryAggregateBy>(["client_ip", "request_fingerprint", "user_agent"]);
 
 export function createRequestHistoryRoutes(store: RequestHistoryStore): Hono {
   const app = new Hono();
@@ -26,6 +27,23 @@ export function createRequestHistoryRoutes(store: RequestHistoryStore): Hono {
       status: statusRaw as RequestOutcome | "all",
       path,
       query,
+    }));
+  });
+
+  app.get("/admin/request-history/aggregate", (c) => {
+    const byRaw = c.req.query("by") ?? "client_ip";
+    const hours = Math.min(Math.max(1, parseInt(c.req.query("hours") ?? "24", 10) || 24), 720);
+    const limit = Math.min(Math.max(1, parseInt(c.req.query("limit") ?? "50", 10) || 50), 500);
+
+    if (!ALLOWED_AGGREGATE_BY.has(byRaw as RequestHistoryAggregateBy)) {
+      c.status(400);
+      return c.json({ error: "Invalid 'by'. Must be client_ip, request_fingerprint, or user_agent." });
+    }
+
+    return c.json(store.aggregate({
+      by: byRaw as RequestHistoryAggregateBy,
+      hours,
+      limit,
     }));
   });
 

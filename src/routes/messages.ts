@@ -26,6 +26,7 @@ import type { UpstreamRouter } from "../proxy/upstream-router.js";
 import type { RequestHistoryStore } from "../auth/request-history.js";
 import {
   createRequestHistoryContext,
+  recordRawBody,
   recordRequestHistoryFailure,
 } from "./shared/request-history.js";
 
@@ -101,14 +102,18 @@ export function createMessagesRoutes(
     }
 
     // Parse request
+    let rawBody: string = "";
     let body: unknown;
     try {
-      body = await c.req.json();
+      rawBody = await c.req.text();
+      body = JSON.parse(rawBody);
     } catch {
       c.status(400);
+      const ctx = createRequestHistoryContext(c, "/v1/messages", "unknown", false, "messages");
+      if (rawBody) recordRawBody(ctx, rawBody);
       recordRequestHistoryFailure(
         requestHistoryStore,
-        createRequestHistoryContext(c, "/v1/messages", "unknown", false, "messages"),
+        ctx,
         400,
         "invalid_json",
         "Invalid JSON in request body",
@@ -123,9 +128,11 @@ export function createMessagesRoutes(
       const rawModel = typeof (body as Record<string, unknown>)?.model === "string"
         ? String((body as Record<string, unknown>).model)
         : "unknown";
+      const ctx = createRequestHistoryContext(c, "/v1/messages", rawModel, false, "messages");
+      recordRawBody(ctx, rawBody);
       recordRequestHistoryFailure(
         requestHistoryStore,
-        createRequestHistoryContext(c, "/v1/messages", rawModel, false, "messages"),
+        ctx,
         400,
         "invalid_request",
         `Invalid request: ${parsed.error.message}`,
@@ -138,17 +145,20 @@ export function createMessagesRoutes(
 
     const codexRequest = translateAnthropicToCodexRequest(req);
     const wantThinking = req.thinking?.type === "enabled" || req.thinking?.type === "adaptive";
+    const displayModel = buildDisplayModelName(parseModelName(req.model));
+    const successCtx = createRequestHistoryContext(
+      c,
+      "/v1/messages",
+      displayModel,
+      !!req.stream,
+      "messages",
+    );
+    recordRawBody(successCtx, rawBody);
     const proxyReq = {
       codexRequest,
-      model: buildDisplayModelName(parseModelName(req.model)),
+      model: displayModel,
       isStreaming: req.stream,
-      requestHistory: createRequestHistoryContext(
-        c,
-        "/v1/messages",
-        buildDisplayModelName(parseModelName(req.model)),
-        req.stream,
-        "messages",
-      ),
+      requestHistory: successCtx,
     };
     const fmt = makeAnthropicFormat(wantThinking);
 

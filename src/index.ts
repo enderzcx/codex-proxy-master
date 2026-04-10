@@ -9,6 +9,7 @@ import { requestId } from "./middleware/request-id.js";
 import { logger } from "./middleware/logger.js";
 import { errorHandler } from "./middleware/error-handler.js";
 import { dashboardAuth } from "./middleware/dashboard-auth.js";
+import { rateLimit } from "./middleware/rate-limit.js";
 import { createAuthRoutes } from "./routes/auth.js";
 import { createAccountRoutes } from "./routes/accounts.js";
 import { createChatRoutes } from "./routes/chat.js";
@@ -87,6 +88,8 @@ export async function startServer(options?: StartOptions): Promise<ServerHandle>
   app.use("*", logger);
   app.use("*", errorHandler);
   app.use("*", dashboardAuth);
+  // v2: per-IP rate limit, scoped internally to /v1/* and /v1beta/* routes.
+  app.use("*", rateLimit());
 
   // Build upstream router from config
   const cfg = getConfig();

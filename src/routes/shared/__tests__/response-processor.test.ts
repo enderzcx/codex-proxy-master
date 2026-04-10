@@ -80,7 +80,9 @@ describe("streamResponse", () => {
 
     // Should have attempted to write an error event
     const errorChunk = s.written.find((c) => c.includes("stream_error"));
-    expect(result).toEqual({ aborted: false, errorMessage: "upstream died" });
+    expect(result.aborted).toBe(false);
+    expect(result.errorMessage).toBe("upstream died");
+    expect(result.responseBytes).toBeGreaterThan(0);
     expect(errorChunk).toBeDefined();
     expect(errorChunk).toContain("upstream died");
   });
@@ -95,8 +97,11 @@ describe("streamResponse", () => {
     // Should not throw
     const result = await streamResponse(s as never, api, rawResponse, "gpt-5.4", adapter as never, vi.fn());
 
-    // Only attempted first write which failed
-    expect(result).toEqual({ aborted: true, errorMessage: null });
+    // Only attempted first write which failed. responseBytes stays 0 because
+    // the write threw before the byte counter could add the chunk length.
+    expect(result.aborted).toBe(true);
+    expect(result.errorMessage).toBeNull();
+    expect(result.responseBytes).toBe(0);
     expect(s.write).toHaveBeenCalledTimes(1);
   });
 });

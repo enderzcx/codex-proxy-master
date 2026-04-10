@@ -17,6 +17,8 @@ export interface StreamWriter {
 export interface StreamResult {
   aborted: boolean;
   errorMessage: string | null;
+  /** v2: total bytes written to the client SSE stream (includes framing). */
+  responseBytes: number;
 }
 
 /**
@@ -35,6 +37,7 @@ export async function streamResponse(
   tupleSchema?: Record<string, unknown> | null,
   onResponseId?: (id: string) => void,
 ): Promise<StreamResult> {
+  let responseBytes = 0;
   try {
     for await (const chunk of adapter.streamTranslator(
       api,
@@ -46,20 +49,21 @@ export async function streamResponse(
     )) {
       try {
         await s.write(chunk);
+        responseBytes += Buffer.byteLength(chunk, "utf-8");
       } catch {
         // Client disconnected mid-stream — stop reading upstream
-        return { aborted: true, errorMessage: null };
+        return { aborted: true, errorMessage: null, responseBytes };
       }
     }
-    return { aborted: false, errorMessage: null };
+    return { aborted: false, errorMessage: null, responseBytes };
   } catch (err) {
     // Send error SSE event to client before closing
     const errMsg = err instanceof Error ? err.message : "Stream interrupted";
     try {
-      await s.write(
-        `data: ${JSON.stringify({ error: { message: errMsg, type: "stream_error" } })}\n\n`,
-      );
+      const errChunk = `data: ${JSON.stringify({ error: { message: errMsg, type: "stream_error" } })}\n\n`;
+      await s.write(errChunk);
+      responseBytes += Buffer.byteLength(errChunk, "utf-8");
     } catch { /* client already gone */ }
-    return { aborted: false, errorMessage: errMsg };
+    return { aborted: false, errorMessage: errMsg, responseBytes };
   }
 }
