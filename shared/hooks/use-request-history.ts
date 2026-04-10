@@ -24,6 +24,13 @@ export interface RequestHistoryItem {
   cached_tokens: number | null;
   reasoning_tokens: number | null;
   attempt_count: number;
+  // v2 network-layer audit fields. All nullable because legacy v1 JSONL
+  // rows predating the schema change normalize them to null on load.
+  client_ip?: string | null;
+  user_agent?: string | null;
+  request_size_bytes?: number | null;
+  response_size_bytes?: number | null;
+  request_fingerprint?: string | null;
 }
 
 export interface RequestHistoryFilters {
