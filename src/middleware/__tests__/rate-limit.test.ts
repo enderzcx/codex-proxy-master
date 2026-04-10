@@ -77,9 +77,42 @@ describe("rateLimit middleware", () => {
     expect(await fire(app, "/v1/chat/completions")).toBe(429);
   });
 
-  it("falls through when no client IP header is present (no nginx)", async () => {
+  it("treats IPv4-mapped IPv6 loopback as localhost", async () => {
+    // Node often exposes local sockets as ::ffff:127.0.0.1 in getConnInfo.
+    // isLocalhostRequest covers the common forms; rate-limit must honor it.
     const app = buildApp();
-    // Many requests with no X-Real-IP / X-Forwarded-For should all pass.
+    for (let i = 0; i < 10; i++) {
+      expect(await fire(app, "/v1/chat/completions", { "X-Real-IP": "::ffff:127.0.0.1" })).toBe(200);
+    }
+    // Pure IPv6 loopback also bypassed.
+    for (let i = 0; i < 10; i++) {
+      expect(await fire(app, "/v1/chat/completions", { "X-Real-IP": "::1" })).toBe(200);
+    }
+  });
+
+  it("rate-limits requests with no X-Real-IP header via a shared (unknown) bucket", async () => {
+    // When forwarding headers are absent, the limiter must NOT bypass — it
+    // buckets all anonymous callers into a single shared bucket. This is the
+    // P1 fix from codex review on commit effe249: the previous behavior let
+    // any caller evade the limiter by omitting headers.
+    const app = buildApp();
+    const statuses: number[] = [];
+    for (let i = 0; i < 5; i++) {
+      const res = await app.request("/v1/chat/completions", {
+        method: "POST",
+        body: '{"test":1}',
+      });
+      statuses.push(res.status);
+    }
+    // With burst=3, the first 3 succeed and the 4th/5th are 429'd.
+    expect(statuses.filter((s) => s === 200).length).toBe(3);
+    expect(statuses.filter((s) => s === 429).length).toBe(2);
+  });
+
+  it("allowlist can include (unknown) to explicitly whitelist anonymous callers", async () => {
+    process.env.RATE_LIMIT_ALLOWLIST = "127.0.0.1,(unknown)";
+    const app = buildApp();
+    // With (unknown) allowlisted, anonymous callers bypass the bucket again.
     for (let i = 0; i < 10; i++) {
       const res = await app.request("/v1/chat/completions", {
         method: "POST",

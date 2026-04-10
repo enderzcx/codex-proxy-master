@@ -407,6 +407,15 @@ async function handleCompact(
         { tag: TAG },
       );
 
+      // v2: measure response payload size for the audit ledger.
+      try {
+        historyCtx.response_size_bytes = Buffer.byteLength(
+          JSON.stringify(result ?? null),
+          "utf-8",
+        );
+      } catch {
+        historyCtx.response_size_bytes = null;
+      }
       finalizeRequestHistory(requestHistoryStore, accountPool, historyCtx, {
         entryId,
         statusCode: 200,

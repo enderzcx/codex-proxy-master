@@ -93,6 +93,11 @@ export function createGeminiRoutes(
   // Handle both generateContent and streamGenerateContent
   app.post("/v1beta/models/:modelAction", async (c) => {
     const modelActionParam = c.req.param("modelAction");
+    // v2: the stored `ctx.path` stays as the Hono route template so the
+    // admin dashboard's exact-match path filter keeps working. We instead
+    // pass `modelActionParam` as an `extraSalt` to recordRawBody() so that
+    // two Gemini requests to different models (or generateContent vs
+    // streamGenerateContent) with the same body get different fingerprints.
     const parsed = parseModelAction(modelActionParam);
 
     if (
@@ -167,7 +172,7 @@ export function createGeminiRoutes(
     } catch {
       c.status(400);
       const ctx = createRequestHistoryContext(c, "/v1beta/models/:modelAction", geminiModel, isStreaming, "gemini");
-      if (rawBody) recordRawBody(ctx, rawBody);
+      if (rawBody) recordRawBody(ctx, rawBody, modelActionParam);
       recordRequestHistoryFailure(
         requestHistoryStore,
         ctx,
@@ -181,7 +186,7 @@ export function createGeminiRoutes(
     if (!validationResult.success) {
       c.status(400);
       const ctx = createRequestHistoryContext(c, "/v1beta/models/:modelAction", geminiModel, isStreaming, "gemini");
-      recordRawBody(ctx, rawBody);
+      recordRawBody(ctx, rawBody, modelActionParam);
       recordRequestHistoryFailure(
         requestHistoryStore,
         ctx,
@@ -211,7 +216,7 @@ export function createGeminiRoutes(
       isStreaming,
       "gemini",
     );
-    recordRawBody(successCtx, rawBody);
+    recordRawBody(successCtx, rawBody, modelActionParam);
     const proxyReq = {
       codexRequest,
       model: geminiModel,

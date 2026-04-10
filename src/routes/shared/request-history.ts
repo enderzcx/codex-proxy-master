@@ -55,21 +55,52 @@ export function extractRequestSize(c: Context): number | null {
   return Number.isFinite(n) && n >= 0 ? n : null;
 }
 
-export function computeRequestFingerprint(method: string, path: string, body: string): string {
+/**
+ * Compute a short fingerprint of a request. Optionally mixes in an extra salt
+ * that does NOT alter `ctx.path` — used by routes like Gemini where the stored
+ * path is a Hono route template (`/v1beta/models/:modelAction`) but we still
+ * want two different model/action combinations with the same body to produce
+ * different fingerprints. Keeping `ctx.path` as a stable template preserves
+ * the admin dashboard's exact-match path filter.
+ */
+export function computeRequestFingerprint(
+  method: string,
+  path: string,
+  body: string,
+  extraSalt?: string,
+): string {
   const capped = body.length > FINGERPRINT_BODY_CAP ? body.slice(0, FINGERPRINT_BODY_CAP) : body;
   const hash = createHash("sha256");
   hash.update(method);
   hash.update("\n");
   hash.update(path);
   hash.update("\n");
+  if (extraSalt) {
+    hash.update(extraSalt);
+    hash.update("\n");
+  }
   hash.update(capped);
   return hash.digest("hex").slice(0, 16);
 }
 
-/** Apply raw-body-derived fields (size + fingerprint) to an existing context. */
-export function recordRawBody(ctx: RequestHistoryContext, rawBody: string): void {
-  ctx.request_fingerprint = computeRequestFingerprint(ctx.method, ctx.path, rawBody);
-  if (rawBody !== undefined) {
+/**
+ * Apply raw-body-derived fields (size + fingerprint) to an existing context.
+ *
+ * `extraSalt` is an optional per-request discriminator that is hashed into
+ * the fingerprint but NOT stored in the context. Use it when the stored
+ * `ctx.path` is a route template and two concrete requests would otherwise
+ * collide on fingerprint (e.g. Gemini `:modelAction`).
+ */
+export function recordRawBody(
+  ctx: RequestHistoryContext,
+  rawBody: string,
+  extraSalt?: string,
+): void {
+  ctx.request_fingerprint = computeRequestFingerprint(ctx.method, ctx.path, rawBody, extraSalt);
+  // Only overwrite the header-derived request_size_bytes when we actually
+  // measured a non-empty body. An empty string likely means we failed to read
+  // the body before the catch block ran — preserve Content-Length in that case.
+  if (rawBody.length > 0) {
     ctx.request_size_bytes = Buffer.byteLength(rawBody, "utf-8");
   }
 }

@@ -96,6 +96,9 @@ export function createEmbeddingsRoutes(
           body: JSON.stringify(body),
         });
         const data = await res.text();
+        // v2: we already have the full upstream body as text. Record its
+        // byte length in the audit ledger.
+        historyCtx.response_size_bytes = Buffer.byteLength(data, "utf-8");
         let usage: UsageInfo | undefined;
         let errorMessage: string | null = null;
         let errorCode: string | null = null;

@@ -20,7 +20,9 @@
  */
 
 import type { Context, Next } from "hono";
+import { getConnInfo } from "@hono/node-server/conninfo";
 import { extractClientIp } from "../routes/shared/request-history.js";
+import { isLocalhostRequest } from "../utils/is-localhost.js";
 
 interface Bucket {
   tokens: number;
@@ -131,13 +133,32 @@ export function rateLimit(): (c: Context, next: Next) => Promise<Response | void
     if (!isRateLimitedPath(path)) return next();
 
     try {
-      const ip = extractClientIp(c);
+      // Identity resolution order:
+      //   1. X-Real-IP / X-Forwarded-For (set by nginx / trusted reverse proxy)
+      //   2. Actual socket remote address via getConnInfo (direct deployments)
+      //   3. Sentinel "(unknown)" bucket as last resort so a caller cannot
+      //      trivially bypass the limiter by stripping forwarding headers.
+      // This closes the 2026-04-10 abuse pattern (header omission bypass)
+      // without collapsing direct-localhost deployments into a single shared
+      // bucket — each local client still gets its own 127.0.0.1 / ::1 entry,
+      // and the implicit loopback allowlist still short-circuits it.
+      let ip = extractClientIp(c);
       if (!ip) {
-        // No identifiable client — pass through. This is the same policy as
-        // dashboard-auth's localhost short-circuit: when nginx isn't proxying
-        // (e.g. direct loopback tests), there is no X-Real-IP header.
-        return next();
+        try {
+          const remote = getConnInfo(c).remote.address;
+          if (remote) ip = remote;
+        } catch {
+          // getConnInfo can throw if the underlying adapter doesn't support
+          // connection info (edge runtimes, some test stubs). Fall through.
+        }
       }
+      if (!ip) ip = "(unknown)";
+      // Normalize loopback via the shared utility so IPv4-mapped IPv6
+      // localhost (`::ffff:127.0.0.1`) and the empty-string case used by
+      // isLocalhostRequest are treated as a single allowlisted identity.
+      // Without this, direct-deployment localhost traffic would start
+      // consuming rate-limit tokens on Node-default socket representations.
+      if (isLocalhostRequest(ip)) return next();
       if (cfg.allowlist.has(ip)) return next();
 
       const nowMs = Date.now();

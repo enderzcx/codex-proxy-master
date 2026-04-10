@@ -44,6 +44,25 @@ describe("computeRequestFingerprint", () => {
     expect(a).toBe(b);
     expect(a).toHaveLength(16);
   });
+
+  it("extraSalt differentiates fingerprints that share path+body", () => {
+    // Motivated by Gemini routes where ctx.path is the Hono route template
+    // (/v1beta/models/:modelAction) — without a salt, two requests to
+    // different modelAction values with the same body would collide.
+    const body = '{"contents":[{"role":"user","parts":[{"text":"hi"}]}]}';
+    const tpl = "/v1beta/models/:modelAction";
+    const withoutSalt = computeRequestFingerprint("POST", tpl, body);
+    const saltA = computeRequestFingerprint("POST", tpl, body, "gemini-2.5-pro:generateContent");
+    const saltB = computeRequestFingerprint("POST", tpl, body, "gemini-2.5-flash:generateContent");
+    const saltC = computeRequestFingerprint("POST", tpl, body, "gemini-2.5-pro:streamGenerateContent");
+    expect(saltA).not.toBe(withoutSalt);
+    expect(saltA).not.toBe(saltB);
+    expect(saltA).not.toBe(saltC);
+    expect(saltB).not.toBe(saltC);
+    // Same salt reproduces the same fingerprint.
+    const saltA2 = computeRequestFingerprint("POST", tpl, body, "gemini-2.5-pro:generateContent");
+    expect(saltA2).toBe(saltA);
+  });
 });
 
 /** Build a Hono Context by running a fake request through a tiny app. */
