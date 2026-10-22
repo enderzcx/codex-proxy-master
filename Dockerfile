@@ -1,14 +1,17 @@
+# Shared Node toolchain for the native addon and application runtime.
+FROM node:22.23.4-bookworm-slim@sha256:de170b39439eb0e5a3444ad7d60b015614a381e10fecae2e30ec9e735122f38d AS node-runtime
+
 # ── Stage 1: Build native TLS addon (Rust → .node) ──────────────────
-FROM rust:1-slim AS native-builder
+FROM rust:1-slim-bookworm@sha256:54e39a2f4480fd827ebfa47736212703a1e46be0fddf7e1590aa0e94b8d0cae1 AS native-builder
 
 RUN apt-get update && \
     apt-get install -y --no-install-recommends build-essential python3 curl ca-certificates gnupg && \
     rm -rf /var/lib/apt/lists/*
 
-# Install Node.js 20 (needed by napi-rs CLI)
-RUN curl -fsSL https://deb.nodesource.com/setup_20.x | bash - && \
-    apt-get install -y --no-install-recommends nodejs && \
-    rm -rf /var/lib/apt/lists/*
+# napi-rs uses the same pinned Node toolchain as the shipped application.
+COPY --from=node-runtime /usr/local/bin/ /usr/local/bin/
+COPY --from=node-runtime /usr/local/lib/node_modules/ /usr/local/lib/node_modules/
+RUN test "$(node --version)" = 'v22.23.4'
 
 WORKDIR /native
 
@@ -22,7 +25,7 @@ COPY native/ ./
 RUN npm ci && npm run build
 
 # ── Stage 2: Application ────────────────────────────────────────────
-FROM node:20-slim
+FROM node-runtime
 
 # curl: needed by full-update.ts
 # unzip: needed by full-update.ts to extract Codex.app
@@ -47,6 +50,7 @@ COPY . .
 
 # 4) Copy native addon from builder stage (overwrite macOS .node if present)
 COPY --from=native-builder /native/codex-tls.linux-*.node /app/native/
+RUN node -e "require('./native/codex-tls.linux-' + process.arch + '-gnu.node')"
 
 # 5) Build frontend (Vite → public/) + backend (tsc → dist/)
 RUN cd web && npm run build && cd .. && npx tsc
