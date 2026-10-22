@@ -22,7 +22,7 @@ RUN mkdir src && echo '#[allow(dead_code)] fn main(){}' > src/lib.rs && \
 
 # Build real addon
 COPY native/ ./
-RUN npm ci && npm run build
+RUN npm ci --no-audit && npm run build
 
 # ── Stage 2: Application ────────────────────────────────────────────
 FROM node-runtime
@@ -39,11 +39,11 @@ WORKDIR /app
 # 1) Backend deps
 COPY package*.json tsconfig.json ./
 COPY scripts/ scripts/
-RUN npm ci
+RUN npm ci --no-audit
 
 # 2) Web deps (separate layer for cache efficiency)
 COPY web/package*.json web/
-RUN cd web && npm ci
+RUN cd web && npm ci --no-audit
 
 # 3) Copy source
 COPY . .
@@ -59,7 +59,7 @@ RUN cd web && npm run build && cd .. && npx tsc
 RUN date -u +%Y-%m-%dT%H:%M:%SZ > /app/.docker-build-time
 
 # 7) Prune dev deps, re-add tsx (needed at runtime by update-checker fork())
-RUN npm prune --omit=dev && npm install --no-save tsx
+RUN npm prune --omit=dev --no-audit && npm install --no-save --no-audit tsx
 
 EXPOSE 8080
 
